@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/dop251/goja"
 	"github.com/samber/lo"
 )
 
@@ -30,7 +33,13 @@ func main() {
 
 	bd := bedrockruntime.NewFromConfig(conf)
 
-	model := gptOss20B
+	model := gptOss120B
+	systemPrompt := "You are a service representative engaged in a polite conversation with a customer. " +
+		"Anything you say to the user will be written to a simple chat interface, so respond with plain text. " +
+		"Do not write any Markdown, code, or ASCII art. " +
+		"Be as concise and straightforward as possible."
+	systemPrompt = ""
+	prompt := "How much do I usually spend on orders?"
 
 	var inputTokens, outputTokens int
 	defer func() {
@@ -49,6 +58,16 @@ func main() {
 				"Get details of a user's orders",
 				toolDesc{
 					"user_id": requiredStringProp("ID of the user you are conversing with"),
+				},
+			),
+			toolSpec(
+				"eval_js",
+				`Execute Javascript in a sandbox. `+
+					`console.log() is not defined. Use log() or return a string to output text instead. `+
+					`Use this tool to perform calculations. `+
+					`Do not trust yourself to do arithmetic or accurately inspect strings.`,
+				toolDesc{
+					"script": requiredStringProp("Javascript to execute"),
 				},
 			),
 		},
@@ -79,6 +98,33 @@ func main() {
 				}
 			}
 			toolErr = fmt.Errorf("invalid user_id")
+		case "eval_js":
+			if _script, ok := params["script"]; ok {
+				script := _script.(string)
+				vm := goja.New()
+				buf := new(strings.Builder)
+				_ = vm.Set("log", func(call goja.FunctionCall) goja.Value {
+					args := lo.Map(call.Arguments, func(arg goja.Value, _ int) string { return arg.ToString().String() })
+					_, _ = fmt.Fprintf(buf, "%s\n", strings.Join(args, " "))
+					return goja.Undefined()
+				})
+				time.AfterFunc(1*time.Second, func() {
+					vm.Interrupt("deadline exceeded")
+				})
+				var scriptResult goja.Value
+				scriptResult, toolErr = vm.RunString(script)
+				if toolErr != nil {
+					return
+				}
+				output := buf.String()
+				if output == "" {
+					output = scriptResult.String()
+				}
+				log.Printf("%q => %q", script, output)
+				toolResult = map[string]any{
+					"output": output,
+				}
+			}
 		default:
 			toolErr = fmt.Errorf("unknown tool %q", toolName)
 		}
@@ -90,19 +136,27 @@ func main() {
 			Role: types.ConversationRoleUser,
 			Content: []types.ContentBlock{
 				&types.ContentBlockMemberText{
-					Value: "How much did I spend on my last order?",
+					Value: prompt,
 				},
 			},
 		},
 	}
 
 	for i := 0; i < 10; i++ {
-		var resp *bedrockruntime.ConverseOutput
-		resp, err = bd.Converse(ctx, &bedrockruntime.ConverseInput{
+		req := &bedrockruntime.ConverseInput{
 			ModelId:    aws.String(model),
 			Messages:   messages,
 			ToolConfig: toolConfig,
-		})
+		}
+		if systemPrompt != "" {
+			req.System = []types.SystemContentBlock{
+				&types.SystemContentBlockMemberText{
+					Value: systemPrompt,
+				},
+			}
+		}
+		var resp *bedrockruntime.ConverseOutput
+		resp, err = bd.Converse(ctx, req)
 		if err != nil {
 			log.Printf("failed to call bedrock converse: %v", err)
 			return
