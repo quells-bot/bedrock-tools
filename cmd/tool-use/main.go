@@ -42,13 +42,15 @@ func main() {
 			toolSpec(
 				"get_user",
 				"Get details of the user you are conversing with",
-				toolDesc(map[string]PropertyDesc{})),
+				toolDesc{},
+			),
 			toolSpec(
 				"get_user_orders",
 				"Get details of a user's orders",
-				toolDesc(map[string]PropertyDesc{
+				toolDesc{
 					"user_id": requiredStringProp("ID of the user you are conversing with"),
-				})),
+				},
+			),
 		},
 	}
 
@@ -66,6 +68,10 @@ func main() {
 							{
 								"order_id": "95B5342BA307",
 								"total":    "$13.62",
+							},
+							{
+								"order_id": "966937C77A5F",
+								"total":    "$95.03",
 							},
 						},
 					}
@@ -216,7 +222,9 @@ type ToolSchema struct {
 	Required   []string                `json:"required"`
 }
 
-func toolDesc(properties map[string]PropertyDesc) (j map[string]any) {
+type toolDesc map[string]PropertyDesc
+
+func marshalToolDesc(properties toolDesc) (j map[string]any) {
 	required := []string{}
 	for propName, prop := range properties {
 		if prop.required {
@@ -233,13 +241,13 @@ func toolDesc(properties map[string]PropertyDesc) (j map[string]any) {
 	return
 }
 
-func toolSpec(name string, desc string, spec map[string]interface{}) *types.ToolMemberToolSpec {
+func toolSpec(name string, desc string, params toolDesc) *types.ToolMemberToolSpec {
 	return &types.ToolMemberToolSpec{
 		Value: types.ToolSpecification{
 			Name:        aws.String(name),
 			Description: aws.String(desc),
 			InputSchema: &types.ToolInputSchemaMemberJson{
-				Value: document.NewLazyDocument(spec),
+				Value: document.NewLazyDocument(marshalToolDesc(params)),
 			},
 		},
 	}
